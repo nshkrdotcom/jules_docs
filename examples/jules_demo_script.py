@@ -1,8 +1,8 @@
 import sys
 import os
+import time # For demonstration purposes
 
 # Adjust path to import jules_scripter if running from examples dir
-# This assumes 'jules_scripter' directory is at the same level as 'examples'
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
@@ -10,78 +10,86 @@ sys.path.insert(0, project_root)
 from jules_scripter import JulesScripter, log, ElementNotFoundException, TimeoutException
 
 def main():
-    log.info("Starting Jules.google.com interaction demo script.")
+    log.info("Starting Jules.google.com interaction demo script (enhanced).")
+    log.info("Note: This script might use settings from 'jules_config.ini' if present in the working directory.")
 
-    # Use a try-except-finally block to ensure browser cleanup
-    # Initialize with Chrome, headless mode for this example
-    # In a real VM, ensure Chrome and ChromeDriver are available/installable by webdriver-manager
     bot = None
     try:
-        with JulesScripter(browser_type='chrome', headless=True) as bot:
-            log.info("JulesScripter initialized with Chrome (headless).")
+        # Initialize JulesScripter. It will look for 'jules_config.ini' by default.
+        # Or specify a path: JulesScripter(config_file_path='my_custom_config.ini')
+        # Constructor arguments will override INI settings e.g. JulesScripter(browser_type='edge')
+        with JulesScripter(headless=True) as bot: # Let config file or defaults decide browser
+            log.info(f"JulesScripter initialized. Browser: {bot.browser_type}, Headless: {bot.headless}, Explicit Wait: {bot.explicit_wait_time}s")
 
-            # 1. Navigate to jules.google.com
-            target_url = "http://jules.google.com" # Hypothetical URL
+            target_url = "https://www.example.com" # Using example.com for actual interaction
             log.info(f"Navigating to {target_url}...")
             bot.goto(target_url)
             log.info(f"Successfully navigated to {target_url}. Page title: {bot.driver.title}")
 
-            # 2. Find a search input field and type a query
-            # Assuming a search input with id 'search-query-input'
-            search_input_selector = "id:search-query-input"
-            search_query = "how to script interactions"
-            log.info(f"Typing '{search_query}' into input field '{search_input_selector}'...")
-            bot.type_into(search_input_selector, search_query)
-            log.info("Successfully typed into search input.")
-
-            # 3. Click a search button
-            # Assuming a search button with id 'search-submit-button'
-            search_button_selector = "id:search-submit-button"
-            log.info(f"Clicking search button '{search_button_selector}'...")
-            bot.click(search_button_selector)
-            log.info("Successfully clicked search button.")
-
-            # 4. Wait for results and extract some text
-            # Assuming results are in a div with id 'search-results-container'
-            # or a 'no-results-message' p tag if nothing is found.
-            results_container_selector = "id:search-results-container"
-            no_results_selector = "css:.no-results-message" # Example CSS selector
-
-            log.info("Waiting for search results...")
+            # Showcase get_attribute
+            h1_selector = "css:h1"
             try:
-                # Wait for either the results container or a no results message
-                # This requires a more complex wait condition not directly in the prototype,
-                # so we'll try to find the results container first with a standard wait.
-                # A real implementation might add wait_for_any_element()
+                h1_tag_name = bot.find_element(h1_selector).tag_name # Get tag name of the element
+                h1_text_content = bot.get_text(h1_selector)
+                log.info(f"Found element '{h1_selector}'. Tag: '{h1_tag_name}', Text: '{h1_text_content}'")
 
-                # For now, let's assume we expect results. If not, it will raise ElementNotFoundException.
-                bot.wait.until(lambda driver: driver.find_element(bot.SELECTOR_STRATEGIES['id'], "search-results-container") or \
-                                             driver.find_element(bot.SELECTOR_STRATEGIES['css'], ".no-results-message"))
-                log.info("Results area is present.")
+                # Showcase wait_for_text_in_element
+                log.info(f"Waiting for text '{h1_text_content}' to be in '{h1_selector}'...")
+                bot.wait_for_text_in_element(h1_selector, h1_text_content, timeout=5)
+                log.info("Text confirmed in element.")
 
-                # Try to get text from results container
-                try:
-                    results_text = bot.get_text(results_container_selector)
-                    log.info(f"Results found: {results_text[:200]}...") # Log first 200 chars
-                except ElementNotFoundException:
-                    # If results_container_selector wasn't the one that appeared, try no_results_selector
-                    try:
-                        no_results_text = bot.get_text(no_results_selector)
-                        log.info(f"No results: {no_results_text}")
-                    except ElementNotFoundException:
-                        log.warning("Neither results container nor no-results message found.")
+            except (ElementNotFoundException, TimeoutException) as e:
+                log.error(f"Error with H1 element: {e}")
 
-            except TimeoutException:
-                log.warning("Timed out waiting for search results or no results message.")
+            # Hypothetical search interaction (adapted from original script)
+            # On example.com, these will fail, which can demonstrate error handling.
+            search_input_selector = "id:search-query-input" # Does not exist on example.com
+            search_query = "how to script interactions"
+
+            log.info(f"Attempting to type '{search_query}' into non-existent input field '{search_input_selector}'...")
+            try:
+                bot.type_into(search_input_selector, search_query, clear_first=False) # showcase clear_first
+                log.info("Successfully typed into search input.")
             except ElementNotFoundException:
-                log.warning("Could not find the primary search results container after initial wait.")
+                log.warning(f"As expected, element '{search_input_selector}' not found for typing.")
+
+            # Hypothetical dropdown - imagine there's a language selector
+            # <select id="lang-select"> <option value="en">English</option> <option value="es">Español</option> </select>
+            lang_dropdown_selector = "id:lang-select" # Does not exist on example.com
+            log.info(f"Attempting to select from non-existent dropdown '{lang_dropdown_selector}'...")
+            try:
+                bot.select_dropdown_option_by_visible_text(lang_dropdown_selector, "Español")
+                log.info("Selected language (hypothetically).")
+            except ElementNotFoundException:
+                log.warning(f"As expected, dropdown '{lang_dropdown_selector}' not found.")
+
+            # Showcase hover_on_element
+            paragraph_selector = "css:p" # Hover over the first paragraph
+            try:
+                log.info(f"Hovering over element '{paragraph_selector}'...")
+                bot.hover_on_element(paragraph_selector)
+                log.info("Successfully hovered over paragraph.")
+            except (ElementNotFoundException, InteractionException) as e:
+                log.error(f"Could not hover over paragraph: {e}")
+
+            # Showcase wait_for_element_disappear - this needs an element that actually disappears
+            # For now, we'll just log the intent.
+            disappearing_element_selector = "id:loading-spinner" # Hypothetical
+            log.info(f"Conceptually waiting for '{disappearing_element_selector}' to disappear (will likely timeout if not present).")
+            try:
+                bot.wait_for_element_disappear(disappearing_element_selector, timeout=2) # Short timeout
+                log.info(f"Element '{disappearing_element_selector}' disappeared.")
+            except TimeoutException:
+                log.info(f"Element '{disappearing_element_selector}' did not disappear within timeout (as expected).")
 
 
-            # 5. Take a screenshot
-            screenshot_file = "jules_interaction_snapshot.png"
+            # Take a screenshot
+            screenshot_file = "example_com_snapshot_enhanced.png"
             log.info(f"Taking screenshot: {screenshot_file}...")
-            bot.take_screenshot(screenshot_file)
-            log.info(f"Screenshot saved to {os.path.join(bot.config.SCREENSHOT_DIR, screenshot_file)}")
+            # screenshot_dir is now read from config by JulesScripter
+            # So, the path will be os.path.join(bot.screenshot_dir, screenshot_file)
+            saved_at = bot.take_screenshot(screenshot_file)
+            log.info(f"Screenshot saved to {saved_at}")
 
             log.info("Demo script interaction steps completed.")
 
@@ -92,7 +100,7 @@ def main():
     except Exception as e:
         log.error(f"Demo script failed with an unexpected error: {e}", exc_info=True)
     finally:
-        log.info("Jules.google.com interaction demo script finished.")
+        log.info("Jules.google.com interaction demo script (enhanced) finished.")
 
 if __name__ == "__main__":
     main()

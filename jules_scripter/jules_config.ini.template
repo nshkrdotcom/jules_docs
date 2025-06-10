@@ -1,0 +1,29 @@
+; Jules Scripter Configuration File
+; Lines starting with ';' or '#' are comments.
+; Copy this file to 'jules_config.ini' in your project root or script directory
+; and modify the settings as needed. Settings in this file will override defaults.
+
+[General]
+; Browser to use: 'firefox', 'chrome', 'edge'
+browser = firefox
+
+; Run in headless mode: True or False
+headless = False
+
+; Directory to save screenshots (relative to script execution path or absolute)
+screenshot_dir = screenshots
+
+[Timeouts]
+; Implicit wait time in seconds (global wait for element presence)
+implicit_wait = 10
+
+; Explicit wait time in seconds (default for WebDriverWait operations)
+explicit_wait = 20
+
+; Page load timeout in seconds
+page_load_timeout = 30
+
+; Add other configurations as the system grows
+; For example:
+; [MyFeature]
+; my_setting = my_value

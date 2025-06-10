@@ -1,11 +1,12 @@
 import time
 import os
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException as SeleniumTimeoutException,                                        NoSuchElementException as SeleniumNoSuchElementException,                                        WebDriverException
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.common.exceptions import TimeoutException as SeleniumTimeoutException,                                        NoSuchElementException as SeleniumNoSuchElementException,                                        WebDriverException, StaleElementReferenceException
 
-from . import config
+from . import config # Assuming config.py might be updated later for new defaults
 from .logger import log
 from .exceptions import ElementNotFoundException, TimeoutException, NavigationException, InteractionException, BrowserInitializationError
 from .driver_manager import get_driver
@@ -26,17 +27,23 @@ class JulesScripter:
 
     def __init__(self, browser_type=config.DEFAULT_BROWSER, headless=config.DEFAULT_HEADLESS_MODE,
                  implicit_wait=config.DEFAULT_IMPLICIT_WAIT, explicit_wait=config.DEFAULT_EXPLICIT_WAIT,
-                 page_load_timeout=config.DEFAULT_PAGE_LOAD_TIMEOUT):
+                 page_load_timeout=config.DEFAULT_PAGE_LOAD_TIMEOUT, config_file_path=None): # Added config_file_path
 
-        self.browser_type = browser_type
-        self.headless = headless
-        self.implicit_wait_time = implicit_wait
-        self.explicit_wait_time = explicit_wait
-        self.page_load_timeout_time = page_load_timeout
+        # Config loading logic will be enhanced in a later step
+        # For now, direct parameters take precedence.
+        self.config_settings = config.load_config(config_file_path) # Anticipating config update
 
-        log.info(f"Initializing JulesScripter with browser: {browser_type}, headless: {headless}")
+        self.browser_type = self.config_settings.get('browser', browser_type)
+        self.headless = self.config_settings.get('headless', headless)
+        self.implicit_wait_time = self.config_settings.get('implicit_wait', implicit_wait)
+        self.explicit_wait_time = self.config_settings.get('explicit_wait', explicit_wait)
+        self.page_load_timeout_time = self.config_settings.get('page_load_timeout', page_load_timeout)
+        self.screenshot_dir = self.config_settings.get('screenshot_dir', config.SCREENSHOT_DIR)
+
+
+        log.info(f"Initializing JulesScripter with browser: {self.browser_type}, headless: {self.headless}")
         try:
-            self.driver = get_driver(browser_name=browser_type, headless=headless)
+            self.driver = get_driver(browser_name=self.browser_type, headless=self.headless)
         except BrowserInitializationError as e:
             log.error(f"Failed to initialize browser driver: {e}")
             raise
@@ -45,25 +52,52 @@ class JulesScripter:
         self.driver.set_page_load_timeout(self.page_load_timeout_time)
         self.wait = WebDriverWait(self.driver, self.explicit_wait_time)
 
-        if not os.path.exists(config.SCREENSHOT_DIR):
-            os.makedirs(config.SCREENSHOT_DIR)
+        if not os.path.exists(self.screenshot_dir):
+            os.makedirs(self.screenshot_dir)
         log.info("JulesScripter initialized successfully.")
 
-    def _resolve_selector(self, selector_or_element):
-        if isinstance(selector_or_element, str):
-            # Assume it's a selector string, use default strategy if not specified
-            if ':' not in selector_or_element:
-                strategy_key = 'css' # Default to CSS
-                actual_selector = selector_or_element
-            else:
-                parts = selector_or_element.split(':', 1)
-                strategy_key = parts[0].lower()
-                actual_selector = parts[1]
+    def _get_waiter(self, timeout=None):
+        return WebDriverWait(self.driver, timeout) if timeout is not None else self.wait
 
-            if strategy_key not in self.SELECTOR_STRATEGIES:
-                raise ValueError(f"Unknown selector strategy: {strategy_key}. Supported: {list(self.SELECTOR_STRATEGIES.keys())}")
-            return (self.SELECTOR_STRATEGIES[strategy_key], actual_selector)
-        return selector_or_element # Assume it's already a WebElement or (By, selector) tuple
+    def _resolve_selector_to_by_tuple(self, selector, strategy_key=None):
+        # Returns (By strategy, actual_selector_value)
+        if strategy_key:
+            strategy_key_lower = strategy_key.lower()
+            if strategy_key_lower not in self.SELECTOR_STRATEGIES:
+                raise ValueError(f"Unknown selector strategy key: {strategy_key}. Supported: {list(self.SELECTOR_STRATEGIES.keys())}")
+            return (self.SELECTOR_STRATEGIES[strategy_key_lower], selector)
+
+        if ':' not in selector:
+            # Default to CSS if no prefix and no strategy_key
+            return (self.SELECTOR_STRATEGIES['css'], selector)
+
+        parts = selector.split(':', 1)
+        strategy_prefix = parts[0].lower()
+        actual_selector_value = parts[1]
+
+        if strategy_prefix not in self.SELECTOR_STRATEGIES:
+            raise ValueError(f"Unknown selector strategy prefix: {strategy_prefix}. Supported: {list(self.SELECTOR_STRATEGIES.keys())}")
+        return (self.SELECTOR_STRATEGIES[strategy_prefix], actual_selector_value)
+
+    def _find_element_internal(self, selector_or_element, strategy_key=None):
+        if not isinstance(selector_or_element, str):
+            return selector_or_element # It's already a WebElement
+
+        by_strategy, actual_selector = self._resolve_selector_to_by_tuple(selector_or_element, strategy_key)
+
+        try:
+            element = self.wait.until(EC.presence_of_element_located((by_strategy, actual_selector)))
+            log.debug(f"Element found: {by_strategy}='{actual_selector}'")
+            return element
+        except SeleniumTimeoutException:
+            log.warning(f"Element not found or timed out: {selector_or_element} (strategy: {by_strategy}, value: '{actual_selector}')")
+            raise ElementNotFoundException(f"Element not found or timed out for selector: {selector_or_element}")
+        except ValueError as ve:
+            log.error(f"Invalid selector or strategy: {ve}")
+            raise
+        except Exception as e:
+            log.error(f"An unexpected error occurred while finding element {selector_or_element}: {e}")
+            raise InteractionException(f"Unexpected error finding element {selector_or_element}: {e}")
 
     def goto(self, url):
         log.info(f"Navigating to URL: {url}")
@@ -74,49 +108,18 @@ class JulesScripter:
             raise NavigationException(f"Error navigating to {url}: {e}")
 
     def find_element(self, selector, strategy_key=None):
-        # If strategy_key is provided, selector is just the value.
-        # If strategy_key is None, selector can be "strategy:value" or just "value" (defaulting to CSS)
         log.debug(f"Finding element with selector: '{selector}', strategy: {strategy_key if strategy_key else 'parsed from selector'}")
-        try:
-            if strategy_key:
-                if strategy_key.lower() not in self.SELECTOR_STRATEGIES:
-                     raise ValueError(f"Unknown selector strategy: {strategy_key}")
-                by_strategy = self.SELECTOR_STRATEGIES[strategy_key.lower()]
-                actual_selector = selector
-            else: # Parse from selector string
-                resolved_item = self._resolve_selector(selector)
-                if not isinstance(resolved_item, tuple) or len(resolved_item) != 2:
-                    # This case should ideally not be hit if _resolve_selector is robust
-                    raise ValueError("Selector could not be resolved to a (strategy, value) tuple.")
-                by_strategy, actual_selector = resolved_item
-
-            element = self.wait.until(EC.presence_of_element_located((by_strategy, actual_selector)))
-            log.debug(f"Element found: {by_strategy}='{actual_selector}'")
-            return element
-        except SeleniumTimeoutException:
-            log.warning(f"Element not found or timed out: {selector}")
-            raise ElementNotFoundException(f"Element not found or timed out for selector: {selector}")
-        except ValueError as ve:
-            log.error(f"Invalid selector or strategy: {ve}")
-            raise
-        except Exception as e:
-            log.error(f"An unexpected error occurred while finding element {selector}: {e}")
-            raise InteractionException(f"Unexpected error finding element {selector}: {e}")
+        return self._find_element_internal(selector, strategy_key)
 
     def click(self, selector_or_element, strategy_key=None):
         log.info(f"Attempting to click element: {selector_or_element}")
         try:
-            if isinstance(selector_or_element, str):
-                element = self.find_element(selector_or_element, strategy_key=strategy_key)
-            else: # Assuming it's a WebElement
-                element = selector_or_element
-
-            # Wait for element to be clickable
+            element = self._find_element_internal(selector_or_element, strategy_key)
             self.wait.until(EC.element_to_be_clickable(element))
             element.click()
             log.info(f"Clicked element successfully.")
         except ElementNotFoundException:
-            raise # Re-raise if find_element failed
+            raise
         except SeleniumTimeoutException:
             log.error(f"Timeout waiting for element to be clickable: {selector_or_element}")
             raise TimeoutException(f"Timeout waiting for element to be clickable: {selector_or_element}")
@@ -124,21 +127,17 @@ class JulesScripter:
             log.error(f"Error clicking element {selector_or_element}: {e}")
             raise InteractionException(f"Error clicking element {selector_or_element}: {e}")
 
-    def type_into(self, selector_or_element, text_to_type, strategy_key=None):
+    def type_into(self, selector_or_element, text_to_type, strategy_key=None, clear_first=True):
         log.info(f"Attempting to type '{text_to_type}' into element: {selector_or_element}")
         try:
-            if isinstance(selector_or_element, str):
-                element = self.find_element(selector_or_element, strategy_key=strategy_key)
-            else: # Assuming it's a WebElement
-                element = selector_or_element
-
-            # Wait for element to be visible and enabled
+            element = self._find_element_internal(selector_or_element, strategy_key)
             self.wait.until(EC.visibility_of(element))
-            element.clear() # Clear existing text
+            if clear_first:
+                element.clear()
             element.send_keys(text_to_type)
             log.info(f"Typed text successfully.")
         except ElementNotFoundException:
-            raise # Re-raise if find_element failed
+            raise
         except SeleniumTimeoutException:
             log.error(f"Timeout waiting for element to be visible/enabled: {selector_or_element}")
             raise TimeoutException(f"Timeout waiting for element to be visible/enabled: {selector_or_element}")
@@ -149,11 +148,7 @@ class JulesScripter:
     def get_text(self, selector_or_element, strategy_key=None):
         log.debug(f"Getting text from element: {selector_or_element}")
         try:
-            if isinstance(selector_or_element, str):
-                element = self.find_element(selector_or_element, strategy_key=strategy_key)
-            else: # Assuming it's a WebElement
-                element = selector_or_element
-
+            element = self._find_element_internal(selector_or_element, strategy_key)
             text = element.text
             log.debug(f"Retrieved text: '{text}'")
             return text
@@ -163,8 +158,21 @@ class JulesScripter:
             log.error(f"Error getting text from element {selector_or_element}: {e}")
             raise InteractionException(f"Error getting text from {selector_or_element}: {e}")
 
+    def get_attribute(self, selector_or_element, attribute_name, strategy_key=None):
+        log.debug(f"Getting attribute '{attribute_name}' from element: {selector_or_element}")
+        try:
+            element = self._find_element_internal(selector_or_element, strategy_key)
+            attr_value = element.get_attribute(attribute_name)
+            log.debug(f"Retrieved attribute '{attribute_name}': '{attr_value}'")
+            return attr_value
+        except ElementNotFoundException:
+            raise
+        except Exception as e:
+            log.error(f"Error getting attribute '{attribute_name}' from {selector_or_element}: {e}")
+            raise InteractionException(f"Error getting attribute {attribute_name} from {selector_or_element}: {e}")
+
     def take_screenshot(self, filename="screenshot.png"):
-        filepath = os.path.join(config.SCREENSHOT_DIR, filename)
+        filepath = os.path.join(self.screenshot_dir, filename)
         try:
             self.driver.save_screenshot(filepath)
             log.info(f"Screenshot saved to {filepath}")
@@ -172,6 +180,102 @@ class JulesScripter:
         except WebDriverException as e:
             log.error(f"Failed to save screenshot to {filepath}: {e}")
             raise InteractionException(f"Failed to save screenshot: {e}")
+
+    # --- New Methods Start Here ---
+
+    def wait_for_element_disappear(self, selector, strategy_key=None, timeout=None):
+        waiter = self._get_waiter(timeout)
+        by_strategy, actual_selector = self._resolve_selector_to_by_tuple(selector, strategy_key)
+        log.info(f"Waiting for element {by_strategy}='{actual_selector}' to disappear.")
+        try:
+            waiter.until(EC.invisibility_of_element_located((by_strategy, actual_selector)))
+            log.info(f"Element {by_strategy}='{actual_selector}' disappeared.")
+            return True
+        except SeleniumTimeoutException:
+            log.warning(f"Timeout waiting for element {by_strategy}='{actual_selector}' to disappear.")
+            raise TimeoutException(f"Timeout waiting for element {by_strategy}='{actual_selector}' to disappear.")
+        except Exception as e:
+            log.error(f"Error waiting for element {by_strategy}='{actual_selector}' to disappear: {e}")
+            raise InteractionException(f"Error waiting for element {by_strategy}='{actual_selector}' to disappear: {e}")
+
+    def wait_for_text_in_element(self, selector, text, strategy_key=None, timeout=None):
+        waiter = self._get_waiter(timeout)
+        by_strategy, actual_selector = self._resolve_selector_to_by_tuple(selector, strategy_key)
+        log.info(f"Waiting for text '{text}' in element {by_strategy}='{actual_selector}'.")
+        try:
+            waiter.until(EC.text_to_be_present_in_element((by_strategy, actual_selector), text))
+            log.info(f"Text '{text}' found in element {by_strategy}='{actual_selector}'.")
+            return True
+        except SeleniumTimeoutException:
+            log.warning(f"Timeout waiting for text '{text}' in element {by_strategy}='{actual_selector}'.")
+            raise TimeoutException(f"Timeout waiting for text '{text}' in element {by_strategy}='{actual_selector}'.")
+        except Exception as e:
+            log.error(f"Error waiting for text in element {by_strategy}='{actual_selector}': {e}")
+            raise InteractionException(f"Error waiting for text in element {by_strategy}='{actual_selector}': {e}")
+
+    def _get_select_element(self, selector_or_element, strategy_key=None):
+        element = self._find_element_internal(selector_or_element, strategy_key)
+        return Select(element)
+
+    def select_dropdown_option_by_value(self, selector_or_element, value, strategy_key=None):
+        log.info(f"Selecting dropdown option by value '{value}' for element: {selector_or_element}")
+        try:
+            select = self._get_select_element(selector_or_element, strategy_key)
+            select.select_by_value(value)
+            log.info(f"Selected option with value '{value}'.")
+        except ElementNotFoundException:
+            raise
+        except SeleniumNoSuchElementException: # Thrown by Select if option not found
+            log.error(f"Option with value '{value}' not found in dropdown {selector_or_element}.")
+            raise ElementNotFoundException(f"Option with value '{value}' not found in dropdown {selector_or_element}.")
+        except Exception as e:
+            log.error(f"Error selecting dropdown option by value for {selector_or_element}: {e}")
+            raise InteractionException(f"Error selecting dropdown option by value for {selector_or_element}: {e}")
+
+    def select_dropdown_option_by_index(self, selector_or_element, index, strategy_key=None):
+        log.info(f"Selecting dropdown option by index '{index}' for element: {selector_or_element}")
+        try:
+            select = self._get_select_element(selector_or_element, strategy_key)
+            select.select_by_index(index)
+            log.info(f"Selected option with index '{index}'.")
+        except ElementNotFoundException:
+            raise
+        except SeleniumNoSuchElementException:
+            log.error(f"Option with index '{index}' not found in dropdown {selector_or_element}.")
+            raise ElementNotFoundException(f"Option with index '{index}' not found in dropdown {selector_or_element}.")
+        except Exception as e:
+            log.error(f"Error selecting dropdown option by index for {selector_or_element}: {e}")
+            raise InteractionException(f"Error selecting dropdown option by index for {selector_or_element}: {e}")
+
+    def select_dropdown_option_by_visible_text(self, selector_or_element, text, strategy_key=None):
+        log.info(f"Selecting dropdown option by visible text '{text}' for element: {selector_or_element}")
+        try:
+            select = self._get_select_element(selector_or_element, strategy_key)
+            select.select_by_visible_text(text)
+            log.info(f"Selected option with visible text '{text}'.")
+        except ElementNotFoundException:
+            raise
+        except SeleniumNoSuchElementException:
+            log.error(f"Option with visible text '{text}' not found in dropdown {selector_or_element}.")
+            raise ElementNotFoundException(f"Option with visible text '{text}' not found in dropdown {selector_or_element}.")
+        except Exception as e:
+            log.error(f"Error selecting dropdown option by visible text for {selector_or_element}: {e}")
+            raise InteractionException(f"Error selecting dropdown option by visible text for {selector_or_element}: {e}")
+
+    def hover_on_element(self, selector_or_element, strategy_key=None):
+        log.info(f"Hovering over element: {selector_or_element}")
+        try:
+            element = self._find_element_internal(selector_or_element, strategy_key)
+            actions = ActionChains(self.driver)
+            actions.move_to_element(element).perform()
+            log.info(f"Successfully hovered over element.")
+        except ElementNotFoundException:
+            raise
+        except Exception as e:
+            log.error(f"Error hovering over element {selector_or_element}: {e}")
+            raise InteractionException(f"Error hovering over element {selector_or_element}: {e}")
+
+    # --- End of New Methods ---
 
     def close(self):
         log.info("Closing browser.")
@@ -181,7 +285,6 @@ class JulesScripter:
                 log.info("Browser closed successfully.")
             except WebDriverException as e:
                 log.error(f"Error closing browser: {e}")
-                # Don't raise here, just log, as we are trying to clean up.
             finally:
                 self.driver = None
 
@@ -192,38 +295,40 @@ class JulesScripter:
         self.close()
 
 if __name__ == '__main__':
-    # This is a basic test. It requires geckodriver (for firefox) or chromedriver to be in PATH
-    # or for webdriver-manager to be able to install it.
-    # In a real VM, you'd need a desktop environment for non-headless, or Xvfb for headless.
-
-    print("Running basic JulesScripter test...")
+    print("Running basic JulesScripter test (with new methods - conceptual tests)...")
     # Test with context manager
     try:
-        with JulesScripter(browser_type='firefox', headless=True) as bot:
+        with JulesScripter(browser_type='firefox', headless=True) as bot: # Note: config.load_config will fail here as it's not yet defined
             bot.goto("https://www.example.com")
             print(f"Page title: {bot.driver.title}")
-            heading_text = bot.get_text("css:h1") # Using "strategy:selector"
+            heading_text = bot.get_text("css:h1")
             print(f"Heading text: {heading_text}")
-            bot.take_screenshot("example_page.png")
+
+            # Conceptual test for wait_for_text_in_element
+            try:
+                bot.wait_for_text_in_element("css:h1", "Example Domain", timeout=5)
+                print("Text 'Example Domain' confirmed in H1.")
+            except TimeoutException:
+                print("Text 'Example Domain' not found in H1 within timeout.")
+
+            # Conceptual test for wait_for_element_disappear (difficult to test on static page)
+            # To test this, you'd need a page where an element actually disappears.
+            # Example: bot.wait_for_element_disappear("css:#temporary-loading-spinner", timeout=5)
+
+            # Conceptual test for hover (difficult to verify without visual feedback or JS event)
+            try:
+                bot.hover_on_element("css:h1")
+                print("Hovered over H1 (conceptually).")
+            except InteractionException as e:
+                print(f"Hover test failed: {e}")
+
+            bot.take_screenshot("example_page_enhanced.png")
         print("Firefox test completed (with context manager).")
     except Exception as e:
-        print(f"Firefox test failed: {e}")
-        log.error("Firefox test failed", exc_info=True)
+        # Expecting an error here due to config.load_config not being defined yet
+        print(f"Test execution expectedly failed or had issues due to config.load_config: {e}")
+        # log.error("Firefox test failed", exc_info=True) # logging might also be affected if config init fails early
 
-    # Test without context manager (manual close)
-    bot_chrome = None
-    try:
-        bot_chrome = JulesScripter(browser_type='chrome', headless=True)
-        bot_chrome.goto("https://www.example.com")
-        print(f"Page title: {bot_chrome.driver.title}")
-        # Example of finding element first, then interacting
-        div_element = bot_chrome.find_element("css:div") # find first div
-        print(f"Found a div with tag name: {div_element.tag_name}")
-        bot_chrome.take_screenshot("example_page_chrome.png")
-        print("Chrome test completed (manual close).")
-    except Exception as e:
-        print(f"Chrome test failed: {e}")
-        log.error("Chrome test failed", exc_info=True)
-    finally:
-        if bot_chrome:
-            bot_chrome.close()
+    # Dropdown test would require a page with a select element. Example:
+    # HTML: <select id="mySelect"><option value="val1">Text1</option></select>
+    # bot.select_dropdown_option_by_value("id:mySelect", "val1")

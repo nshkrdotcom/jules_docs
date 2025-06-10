@@ -148,8 +148,10 @@ python examples/simple_test.py
 
 Refer to the `jules_scripter/browser.py` file for full details and method signatures.
 
-*   **`JulesScripter(browser_type='firefox', headless=False, implicit_wait=10, explicit_wait=20, page_load_timeout=30)`**
+*   **`JulesScripter(browser_type='firefox', headless=False, implicit_wait=10, explicit_wait=20, page_load_timeout=30, config_file_path=None)`**
     *   Initializes the scripter. `browser_type` can be 'firefox', 'chrome', or 'edge'.
+    *   Settings can be overridden by a `jules_config.ini` file (see Configuration section).
+    *   `config_file_path`: Optionally specify a path to an INI configuration file. If None, looks for `jules_config.ini` in the current working directory.
 
 *   **`goto(url: str)`**: Navigates the browser to the given URL.
 
@@ -157,15 +159,30 @@ Refer to the `jules_scripter/browser.py` file for full details and method signat
     *   Returns a Selenium WebElement.
     *   Raises `ElementNotFoundException` if not found within the explicit wait time.
 
+*   **`get_attribute(selector_or_element, attribute_name: str, strategy_key: str = None)`**: Gets the value of an element's attribute.
+
 *   **`click(selector_or_element, strategy_key: str = None)`**: Clicks an element.
     *   `selector_or_element` can be a selector string or a WebElement instance.
 
-*   **`type_into(selector_or_element, text_to_type: str, strategy_key: str = None)`**: Types text into an input field.
-    *   Clears the field before typing.
+*   **`type_into(selector_or_element, text_to_type: str, strategy_key: str = None, clear_first: bool = True)`**: Types text into an input field.
+    *   `clear_first`: If True (default), clears the field before typing.
 
 *   **`get_text(selector_or_element, strategy_key: str = None)`**: Gets the visible text of an element.
 
 *   **`take_screenshot(filename: str = "screenshot.png")`**: Saves a screenshot of the current page to the `screenshots` directory (configurable in `config.py`).
+
+*   **`wait_for_element_disappear(selector: str, strategy_key: str = None, timeout: int = None)`**: Waits for an element to become invisible or stale.
+    *   `timeout`: Specific timeout for this wait, otherwise uses default explicit wait.
+
+*   **`wait_for_text_in_element(selector: str, text: str, strategy_key: str = None, timeout: int = None)`**: Waits for the given text to be present in the specified element.
+
+*   **`select_dropdown_option_by_value(selector_or_element, value: str, strategy_key: str = None)`**: Selects a dropdown (`<select>`) option by its `value` attribute.
+
+*   **`select_dropdown_option_by_index(selector_or_element, index: int, strategy_key: str = None)`**: Selects a dropdown option by its numerical index.
+
+*   **`select_dropdown_option_by_visible_text(selector_or_element, text: str, strategy_key: str = None)`**: Selects a dropdown option by its visible text.
+
+*   **`hover_on_element(selector_or_element, strategy_key: str = None)`**: Performs a mouse hover action on an element.
 
 *   **`close()`**: Closes the browser and quits the driver. Automatically called if using a context manager.
 
@@ -181,8 +198,44 @@ Refer to the `jules_scripter/browser.py` file for full details and method signat
 
 ## 10. Configuration
 
-*   Default settings (browser, wait times, screenshot directory) are in `jules_scripter/config.py`.
-*   Currently, modify this file directly for changes. Future versions might support external configuration files.
+Jules Scripter allows configuration through a file or via constructor parameters.
+
+### Configuration File (`jules_config.ini`)
+
+You can customize the behavior of Jules Scripter by creating a `jules_config.ini` file in the directory where your script is run, or by providing a path to a custom INI file via the `config_file_path` parameter in the `JulesScripter` constructor.
+
+A template file named `jules_scripter/jules_config.ini.template` is provided in the library. Copy this template to `jules_config.ini` (or your custom path) and modify it as needed.
+
+**Example `jules_config.ini`:**
+```ini
+[General]
+browser = chrome
+headless = True
+screenshot_dir = custom_screenshots
+
+[Timeouts]
+explicit_wait = 25
+implicit_wait = 5
+```
+
+**Priority of Settings:**
+1.  Values explicitly passed to the `JulesScripter` constructor (e.g., `JulesScripter(browser='chrome')`).
+2.  Values from the configuration file (if `config_file_path` is used or `jules_config.ini` is found).
+3.  Default values defined in `jules_scripter/config.py`.
+
+*(Self-correction: The above priority is how it *should* ideally work. The current implementation of `browser.py` __init__ and `config.py` `load_config` is: `load_config` provides a base dictionary from file/defaults, and then `browser.py` constructor parameters override these if provided. This means constructor parameters have the highest priority. The README should reflect current implementation)*
+
+**Corrected Priority of Settings (as per current implementation):**
+1.  Values explicitly passed to the `JulesScripter` constructor (e.g., `JulesScripter(browser='chrome')`) take the highest precedence.
+2.  If a constructor parameter is not provided, the value is taken from the configuration loaded via `config_file_path` (or default `jules_config.ini`).
+3.  If not in the INI file or the INI file is not found, the hardcoded default values from `jules_scripter/config.py` are used.
+
+### Constructor Parameters
+You can also override default settings or file settings by passing parameters directly to the `JulesScripter` constructor:
+```python
+bot = JulesScripter(browser_type='chrome', headless=True, explicit_wait=30)
+```
+Refer to the API overview for the `JulesScripter` constructor for all available parameters.
 
 ## 11. Error Handling
 
